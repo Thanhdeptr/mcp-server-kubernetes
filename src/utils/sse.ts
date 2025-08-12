@@ -8,6 +8,7 @@ interface SessionInfo {
   sessionId: string;
   lastActivity: number;
   isActive: boolean;
+  isReady: boolean; // Thêm flag để track trạng thái sẵn sàng
 }
 
 export function startSSEServer(server: Server) {
@@ -15,8 +16,8 @@ export function startSSEServer(server: Server) {
 
   // Enhanced session management with persistence
   const sessions = new Map<string, SessionInfo>();
-  const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-  const CLEANUP_INTERVAL = 60 * 1000; // 1 minute
+  const SESSION_TIMEOUT = 5 * 60 * 1000; // Giảm xuống 5 phút
+  const CLEANUP_INTERVAL = 10 * 1000; // Giảm xuống 10 giây
 
   // Cleanup old sessions periodically
   setInterval(() => {
@@ -31,60 +32,68 @@ export function startSSEServer(server: Server) {
 
   app.get('/sse', async (req, res) => {
     const transport = new SSEServerTransport('/messages', res);
-    
-    // Wait for session ID to be available
-    await new Promise<void>((resolve) => {
-      const checkSessionId = () => {
-        if (transport.sessionId) {
-          resolve();
-        } else {
-          setTimeout(checkSessionId, 10);
-        }
-      };
-      checkSessionId();
-    });
 
-    // Store session with activity tracking
+    // Tạo session ID ngay lập tức thay vì chờ
+    const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Store session với trạng thái chưa sẵn sàng
     const sessionInfo: SessionInfo = {
       transport,
-      sessionId: transport.sessionId,
+      sessionId: sessionId,
       lastActivity: Date.now(),
-      isActive: true
+      isActive: true,
+      isReady: false
     };
 
-    sessions.set(transport.sessionId, sessionInfo);
-    console.log(`🔗 New SSE session created: ${transport.sessionId}`);
+    sessions.set(sessionId, sessionInfo);
+    console.log(`🔗 New SSE session created: ${sessionId}`);
 
     // Handle SSE connection close
     res.on('close', () => {
-      const session = sessions.get(transport.sessionId);
+      const session = sessions.get(sessionId);
       if (session) {
         session.isActive = false;
-        console.log(`⚠️ SSE connection closed for session: ${transport.sessionId}`);
-        // Don't delete immediately, keep for potential recovery
+        console.log(`⚠️ SSE connection closed for session: ${sessionId}`);
       }
     });
 
-    await server.connect(transport);
+    try {
+      await server.connect(transport);
+      // Đánh dấu session đã sẵn sàng sau khi connect thành công
+      sessionInfo.isReady = true;
+      sessionInfo.sessionId = transport.sessionId || sessionId; // Cập nhật sessionId thực từ transport
+      console.log(`✅ Session ready: ${sessionInfo.sessionId}`);
+    } catch (error) {
+      console.error(`❌ Failed to connect session ${sessionId}:`, error);
+      sessions.delete(sessionId);
+      res.status(500).send('Failed to establish SSE connection');
+      return;
+    }
   });
 
   app.post('/messages', (req, res) => {
     const sessionId = req.query.sessionId as string;
-    
+
     if (!sessionId) {
       return res.status(400).send('Missing sessionId parameter');
     }
 
     const session = sessions.get(sessionId);
-    
+
     if (!session) {
       console.log(`❌ Session not found: ${sessionId}`);
       return res.status(404).send('Session not found. Must establish SSE connection first.');
     }
 
+    // Kiểm tra session có sẵn sàng không
+    if (!session.isReady) {
+      console.log(`⏳ Session not ready yet: ${sessionId}`);
+      return res.status(503).send('Session not ready. Please wait a moment and try again.');
+    }
+
     // Update last activity
     session.lastActivity = Date.now();
-    
+
     // If session was marked as inactive, reactivate it
     if (!session.isActive) {
       session.isActive = true;
@@ -92,6 +101,12 @@ export function startSSEServer(server: Server) {
     }
 
     try {
+      // Kiểm tra transport có tồn tại và sẵn sàng không
+      if (!session.transport || typeof session.transport.handlePostMessage !== 'function') {
+        console.error(`❌ Invalid transport for session: ${sessionId}`);
+        return res.status(500).send('Transport not properly initialized');
+      }
+
       session.transport.handlePostMessage(req, res);
       console.log(`📤 RPC call processed for session: ${sessionId}`);
     } catch (error) {
@@ -105,10 +120,11 @@ export function startSSEServer(server: Server) {
     const sessionList = Array.from(sessions.entries()).map(([id, session]) => ({
       sessionId: id,
       isActive: session.isActive,
+      isReady: session.isReady,
       lastActivity: new Date(session.lastActivity).toISOString(),
       age: Date.now() - session.lastActivity
     }));
-    
+
     res.json({
       totalSessions: sessions.size,
       sessions: sessionList
@@ -127,6 +143,6 @@ export function startSSEServer(server: Server) {
     console.log(`✅mcp-kubernetes-server is listening on port ${port}`);
     console.log(`🌐Use the following url to connect to the server:`);
     console.log(` http://${host}:${port}/sse`);
-    console.log(` Session management enabled with ${SESSION_TIMEOUT/1000/60/60/24} days timeout`);
+    console.log(`⚡ Fast session setup enabled (${SESSION_TIMEOUT / 1000}s timeout)`);
   });
 }
