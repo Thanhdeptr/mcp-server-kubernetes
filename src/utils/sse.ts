@@ -33,27 +33,28 @@ export function startSSEServer(server: Server) {
   app.get('/sse', async (req, res) => {
     const transport = new SSEServerTransport('/messages', res);
 
-    // Tạo session ID ngay lập tức thay vì chờ
-    const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Tạo session ID tạm thời ngay lập tức thay vì chờ
+    const tempSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Store session với trạng thái chưa sẵn sàng
     const sessionInfo: SessionInfo = {
       transport,
-      sessionId: sessionId,
+      sessionId: tempSessionId,
       lastActivity: Date.now(),
       isActive: true,
       isReady: false
     };
 
-    sessions.set(sessionId, sessionInfo);
-    console.log(`🔗 New SSE session created: ${sessionId}`);
+    sessions.set(tempSessionId, sessionInfo);
+    console.log(`🔗 New SSE session created: ${tempSessionId}`);
 
-    // Handle SSE connection close
+    // Handle SSE connection close - sử dụng sessionId hiện tại (sau khi re-key)
     res.on('close', () => {
-      const session = sessions.get(sessionId);
+      const currentId = sessionInfo.sessionId || tempSessionId;
+      const session = sessions.get(currentId) || sessions.get(tempSessionId);
       if (session) {
         session.isActive = false;
-        console.log(`⚠️ SSE connection closed for session: ${sessionId}`);
+        console.log(`⚠️ SSE connection closed for session: ${currentId}`);
       }
     });
 
@@ -61,11 +62,18 @@ export function startSSEServer(server: Server) {
       await server.connect(transport);
       // Đánh dấu session đã sẵn sàng sau khi connect thành công
       sessionInfo.isReady = true;
-      sessionInfo.sessionId = transport.sessionId || sessionId; // Cập nhật sessionId thực từ transport
+      const realSessionId = transport.sessionId || tempSessionId;
+      // Nếu SDK cung cấp sessionId mới (UUID), re-key Map từ temp -> real
+      if (realSessionId !== tempSessionId) {
+        sessions.delete(tempSessionId);
+        sessions.set(realSessionId, sessionInfo);
+        console.log(`🔑 Re-key session: ${tempSessionId} -> ${realSessionId}`);
+      }
+      sessionInfo.sessionId = realSessionId;
       console.log(`✅ Session ready: ${sessionInfo.sessionId}`);
     } catch (error) {
-      console.error(`❌ Failed to connect session ${sessionId}:`, error);
-      sessions.delete(sessionId);
+      console.error(`❌ Failed to connect session ${tempSessionId}:`, error);
+      sessions.delete(tempSessionId);
       res.status(500).send('Failed to establish SSE connection');
       return;
     }
@@ -78,7 +86,23 @@ export function startSSEServer(server: Server) {
       return res.status(400).send('Missing sessionId parameter');
     }
 
-    const session = sessions.get(sessionId);
+    // Tìm trực tiếp theo key trước
+    let session = sessions.get(sessionId);
+    // Fallback: nếu không thấy, thử tìm theo giá trị sessionInfo.sessionId (trường hợp chưa kịp re-key)
+    if (!session) {
+      for (const [key, value] of sessions.entries()) {
+        if (value.sessionId === sessionId) {
+          session = value;
+          // Đảm bảo Map có key đúng = sessionId
+          if (key !== sessionId) {
+            sessions.delete(key);
+            sessions.set(sessionId, value);
+            console.log(`🔧 Normalized session key: ${key} -> ${sessionId}`);
+          }
+          break;
+        }
+      }
+    }
 
     if (!session) {
       console.log(`❌ Session not found: ${sessionId}`);
