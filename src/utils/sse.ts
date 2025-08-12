@@ -63,11 +63,14 @@ export function startSSEServer(server: Server) {
       // Đánh dấu session đã sẵn sàng sau khi connect thành công
       sessionInfo.isReady = true;
       const realSessionId = transport.sessionId || tempSessionId;
-      // Nếu SDK cung cấp sessionId mới (UUID), re-key Map từ temp -> real
+      // Nếu SDK cung cấp sessionId mới (UUID), thêm key thật ngay lập tức
       if (realSessionId !== tempSessionId) {
-        sessions.delete(tempSessionId);
         sessions.set(realSessionId, sessionInfo);
         console.log(`🔑 Re-key session: ${tempSessionId} -> ${realSessionId}`);
+        // Trì hoãn xóa key tạm để tránh race khi client POST ngay sau khi nhận sessionId
+        setTimeout(() => {
+          sessions.delete(tempSessionId);
+        }, 3000);
       }
       sessionInfo.sessionId = realSessionId;
       console.log(`✅ Session ready: ${sessionInfo.sessionId}`);
@@ -88,7 +91,7 @@ export function startSSEServer(server: Server) {
 
     // Tìm trực tiếp theo key trước
     let session = sessions.get(sessionId);
-    // Fallback: nếu không thấy, thử tìm theo giá trị sessionInfo.sessionId (trường hợp chưa kịp re-key)
+    // Fallback 1: nếu không thấy, thử tìm theo giá trị sessionInfo.sessionId (trường hợp chưa kịp re-key)
     if (!session) {
       for (const [key, value] of sessions.entries()) {
         if (value.sessionId === sessionId) {
@@ -98,6 +101,21 @@ export function startSSEServer(server: Server) {
             sessions.delete(key);
             sessions.set(sessionId, value);
             console.log(`🔧 Normalized session key: ${key} -> ${sessionId}`);
+          }
+          break;
+        }
+      }
+    }
+
+    // Fallback 2: tìm theo transport.sessionId (đã set bởi SDK sau connect)
+    if (!session) {
+      for (const [key, value] of sessions.entries()) {
+        if (value.transport?.sessionId === sessionId) {
+          session = value;
+          if (key !== sessionId) {
+            sessions.delete(key);
+            sessions.set(sessionId, value);
+            console.log(`🔧 Normalized session key via transport: ${key} -> ${sessionId}`);
           }
           break;
         }
