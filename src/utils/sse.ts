@@ -19,7 +19,7 @@ export function startSSEServer(server: Server) {
 
   app.get('/sse', async (req, res) => {
     const requestedSessionId = req.query.sessionId as string;
-    let sessionInfo: SessionInfo;
+    let sessionInfo: SessionInfo | undefined;
     let isResume = false;
 
     // Kiểm tra xem client có muốn resume session không
@@ -72,7 +72,7 @@ export function startSSEServer(server: Server) {
     });
 
     // Connect to MCP server chỉ khi session mới hoặc chưa sẵn sàng
-    if (!isResume || !sessionInfo.isReady) {
+    if (sessionInfo && (!isResume || !sessionInfo.isReady)) {
       try {
         await server.connect(sessionInfo.transport);
         // Đánh dấu session đã sẵn sàng sau khi connect thành công
@@ -85,7 +85,7 @@ export function startSSEServer(server: Server) {
           console.log(`🔑 Re-key session: ${sessionInfo.sessionId} -> ${realSessionId}`);
           // Trì hoãn xóa key tạm để tránh race
           setTimeout(() => {
-            sessions.delete(sessionInfo.sessionId);
+            sessions.delete(sessionInfo!.sessionId);
           }, 3000);
           sessionInfo.sessionId = realSessionId;
         }
@@ -97,6 +97,13 @@ export function startSSEServer(server: Server) {
         res.status(500).send('Failed to establish SSE connection');
         return;
       }
+    }
+    
+    // Safety check - này không nên xảy ra, nhưng TypeScript cần
+    if (!sessionInfo) {
+      console.error('❌ No session info available');
+      res.status(500).send('Session creation failed');
+      return;
     }
   });
 
