@@ -31,54 +31,88 @@ export function startSSEServer(server: Server) {
   }, CLEANUP_INTERVAL);
 
   app.get('/sse', async (req, res) => {
-    const transport = new SSEServerTransport('/messages', res);
+    const requestedSessionId = req.query.sessionId as string;
+    let sessionInfo: SessionInfo;
+    let isResume = false;
 
-    // Tạo session ID tạm thời ngay lập tức thay vì chờ
-    const tempSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Kiểm tra xem client có muốn resume session không
+    if (requestedSessionId) {
+      const existingSession = sessions.get(requestedSessionId);
+      if (existingSession) {
+        // Resume session hiện có
+        console.log(`🔄 Resuming existing session: ${requestedSessionId}`);
+        sessionInfo = existingSession;
+        isResume = true;
 
-    // Store session với trạng thái chưa sẵn sàng
-    const sessionInfo: SessionInfo = {
-      transport,
-      sessionId: tempSessionId,
-      lastActivity: Date.now(),
-      isActive: true,
-      isReady: false
-    };
+        // Cập nhật transport mới cho connection mới
+        const newTransport = new SSEServerTransport('/messages', res);
+        sessionInfo.transport = newTransport;
+        sessionInfo.isActive = true;
+        sessionInfo.lastActivity = Date.now();
 
-    sessions.set(tempSessionId, sessionInfo);
-    console.log(`🔗 New SSE session created: ${tempSessionId}`);
+        // Nếu session đã sẵn sàng, không cần connect lại
+        if (sessionInfo.isReady) {
+          console.log(`✅ Session resumed and ready: ${requestedSessionId}`);
+        }
+      } else {
+        console.log(`⚠️ Requested session not found, creating new: ${requestedSessionId}`);
+      }
+    }
 
-    // Handle SSE connection close - sử dụng sessionId hiện tại (sau khi re-key)
+    // Tạo session mới nếu không resume
+    if (!isResume) {
+      const transport = new SSEServerTransport('/messages', res);
+
+      // Tạo session ID tạm thời ngay lập tức thay vì chờ
+      const tempSessionId = requestedSessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      // Store session với trạng thái chưa sẵn sàng
+      sessionInfo = {
+        transport,
+        sessionId: tempSessionId,
+        lastActivity: Date.now(),
+        isActive: true,
+        isReady: false
+      };
+
+      sessions.set(tempSessionId, sessionInfo);
+      console.log(`🔗 New SSE session created: ${tempSessionId}`);
+    }
+
+    // Handle SSE connection close - sử dụng sessionId hiện tại
     res.on('close', () => {
-      const currentId = sessionInfo.sessionId || tempSessionId;
-      const session = sessions.get(currentId) || sessions.get(tempSessionId);
-      if (session) {
-        session.isActive = false;
-        console.log(`⚠️ SSE connection closed for session: ${currentId}`);
+      if (sessionInfo) {
+        sessionInfo.isActive = false;
+        console.log(`⚠️ SSE connection closed for session: ${sessionInfo.sessionId}`);
       }
     });
 
-    try {
-      await server.connect(transport);
-      // Đánh dấu session đã sẵn sàng sau khi connect thành công
-      sessionInfo.isReady = true;
-      const realSessionId = transport.sessionId || tempSessionId;
-      // Nếu SDK cung cấp sessionId mới (UUID), thêm key thật ngay lập tức
-      if (realSessionId !== tempSessionId) {
-        sessions.set(realSessionId, sessionInfo);
-        console.log(`🔑 Re-key session: ${tempSessionId} -> ${realSessionId}`);
-        // Trì hoãn xóa key tạm để tránh race khi client POST ngay sau khi nhận sessionId
-        setTimeout(() => {
-          sessions.delete(tempSessionId);
-        }, 3000);
+    // Connect to MCP server chỉ khi session mới hoặc chưa sẵn sàng
+    if (!isResume || !sessionInfo.isReady) {
+      try {
+        await server.connect(sessionInfo.transport);
+        // Đánh dấu session đã sẵn sàng sau khi connect thành công
+        sessionInfo.isReady = true;
+        const realSessionId = sessionInfo.transport.sessionId || sessionInfo.sessionId;
+
+        // Nếu SDK cung cấp sessionId mới (UUID), thêm key thật ngay lập tức
+        if (realSessionId !== sessionInfo.sessionId && !isResume) {
+          sessions.set(realSessionId, sessionInfo);
+          console.log(`🔑 Re-key session: ${sessionInfo.sessionId} -> ${realSessionId}`);
+          // Trì hoãn xóa key tạm để tránh race khi client POST ngay sau khi nhận sessionId
+          setTimeout(() => {
+            sessions.delete(sessionInfo.sessionId);
+          }, 3000);
+          sessionInfo.sessionId = realSessionId;
+        }
+
+        console.log(`✅ Session ready: ${sessionInfo.sessionId}`);
+      } catch (error) {
+        console.error(`❌ Failed to connect session ${sessionInfo.sessionId}:`, error);
+        sessions.delete(sessionInfo.sessionId);
+        res.status(500).send('Failed to establish SSE connection');
+        return;
       }
-      sessionInfo.sessionId = realSessionId;
-      console.log(`✅ Session ready: ${sessionInfo.sessionId}`);
-    } catch (error) {
-      console.error(`❌ Failed to connect session ${tempSessionId}:`, error);
-      sessions.delete(tempSessionId);
-      res.status(500).send('Failed to establish SSE connection');
-      return;
     }
   });
 
@@ -149,10 +183,25 @@ export function startSSEServer(server: Server) {
         return res.status(500).send('Transport not properly initialized');
       }
 
+      // Kiểm tra SSE connection còn active không
+      if (!session.isActive) {
+        console.error(`❌ SSE connection closed for session: ${sessionId}`);
+        sessions.delete(sessionId); // Dọn dẹp session đã chết
+        return res.status(410).send('SSE connection closed. Please reconnect.');
+      }
+
       session.transport.handlePostMessage(req, res);
       console.log(`📤 RPC call processed for session: ${sessionId}`);
     } catch (error) {
       console.error(`❌ Error handling RPC for session ${sessionId}:`, error);
+
+      // Nếu lỗi là "SSE connection not established", dọn dẹp session
+      if (error instanceof Error && error.message.includes('SSE connection not established')) {
+        console.log(`🧹 Cleaning up dead session: ${sessionId}`);
+        sessions.delete(sessionId);
+        return res.status(410).send('SSE connection lost. Please reconnect.');
+      }
+
       res.status(500).send('Internal server error');
     }
   });
@@ -185,6 +234,7 @@ export function startSSEServer(server: Server) {
     console.log(`✅mcp-kubernetes-server is listening on port ${port}`);
     console.log(`🌐Use the following url to connect to the server:`);
     console.log(` http://${host}:${port}/sse`);
+    console.log(`🔄 Resume: http://${host}:${port}/sse?sessionId=<existing-session-id>`);
     console.log(`⚡ Fast session setup enabled (${SESSION_TIMEOUT / 1000}s timeout)`);
   });
 }
