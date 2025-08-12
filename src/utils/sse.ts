@@ -98,7 +98,7 @@ export function startSSEServer(server: Server) {
         return;
       }
     }
-    
+
     // Safety check - này không nên xảy ra, nhưng TypeScript cần
     if (!sessionInfo) {
       console.error('❌ No session info available');
