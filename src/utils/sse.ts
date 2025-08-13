@@ -175,29 +175,41 @@ export function startSSEServer(server: Server) {
     // Update last activity
     session.lastActivity = Date.now();
 
-    // Auto-resume session nếu inactive
+    // Không auto-resume nữa - client phải tự reconnect SSE
     if (!session.isActive) {
-      console.log(`🔄 Auto-resuming session on tool call: ${sessionId}`);
-      session.isActive = true;
-      session.lastActivity = Date.now();
-      // Note: Transport sẽ được tạo mới khi cần thiết trong handlePostMessage
+      console.log(`💤 Session inactive: ${sessionId}, need SSE reconnection`);
+      return res.status(410).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Session inactive. Please reconnect SSE first.',
+          data: {
+            sessionId: sessionId,
+            action: 'reconnect_sse',
+            instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
+          }
+        },
+        id: req.body?.id || null
+      });
     }
 
     // Kiểm tra transport có alive và valid không
     if (!session.transport || !isTransportAlive(session.transport)) {
       console.log(`⚠️ Transport dead for session: ${sessionId}, need SSE reconnection`);
-      session.isActive = false; // Mark as inactive
-      return res.status(410).json({
+
+      // Trả về response yêu cầu client reconnect SSE
+      return res.status(200).json({
         jsonrpc: '2.0',
         error: {
           code: -32000,
-          message: 'Session exists but SSE connection is dead. Please reconnect.',
+          message: 'SSE connection lost. Please reconnect SSE first.',
           data: {
             sessionId: sessionId,
-            resumeUrl: `/sse?sessionId=${sessionId}`
+            action: 'reconnect_sse',
+            instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
           }
         },
-        id: null
+        id: req.body?.id || null
       });
     }
 
@@ -257,6 +269,6 @@ export function startSSEServer(server: Server) {
     console.log(`🌐Use the following url to connect to the server:`);
     console.log(` http://${host}:${port}/sse`);
     console.log(`🔄 Resume: http://${host}:${port}/sse?sessionId=<existing-session-id>`);
-    console.log(`♾️ Sessions never expire - automatic resume when reconnecting`);
+    console.log(`♾️ Sessions never expire - manual reconnect required when disconnected`);
   });
 }
