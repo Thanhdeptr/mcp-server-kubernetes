@@ -29,7 +29,7 @@ export function startSSEServer(server: Server) {
       const existingSession = sessions.get(requestedSessionId);
       if (existingSession) {
         // Resume session hiện có
-        console.log(`🔄 Resuming existing session: ${requestedSessionId}`);
+        console.log(`🔄 RESUME SESSION: ${requestedSessionId}`);
         sessionInfo = existingSession;
         isResume = true;
 
@@ -39,9 +39,9 @@ export function startSSEServer(server: Server) {
         sessionInfo.isActive = true;
         sessionInfo.lastActivity = Date.now();
 
-        console.log(`✅ Session resumed: ${requestedSessionId}`);
+        console.log(`✅ SESSION RESUMED: ${requestedSessionId}`);
       } else {
-        console.log(`⚠️ Requested session not found, creating new: ${requestedSessionId}`);
+        console.log(`⚠️ Session not found, creating new: ${requestedSessionId}`);
       }
     }
 
@@ -81,15 +81,14 @@ export function startSSEServer(server: Server) {
       }
     });
 
-    // Connect to MCP server chỉ khi session mới hoặc chưa sẵn sàng
-    if (sessionInfo && (!isResume || !sessionInfo.isReady)) {
+    // Connect to MCP server cho session mới hoặc resume
+    if (sessionInfo && (!sessionInfo.isReady || isResume)) {
       try {
         await server.connect(sessionInfo.transport);
-        // Đánh dấu session đã sẵn sàng sau khi connect thành công
         sessionInfo.isReady = true;
         const realSessionId = sessionInfo.transport.sessionId || sessionInfo.sessionId;
 
-        // Nếu SDK cung cấp sessionId mới (UUID), re-key Map
+        // Nếu SDK cung cấp sessionId mới (UUID), re-key Map (chỉ cho session mới)
         if (realSessionId !== sessionInfo.sessionId && !isResume) {
           sessions.set(realSessionId, sessionInfo);
           console.log(`🔑 Re-key session: ${sessionInfo.sessionId} -> ${realSessionId}`);
@@ -100,7 +99,7 @@ export function startSSEServer(server: Server) {
           sessionInfo.sessionId = realSessionId;
         }
 
-        console.log(`✅ Session ready: ${sessionInfo.sessionId}`);
+        console.log(`✅ SESSION READY: ${sessionInfo.sessionId}`);
       } catch (error) {
         console.error(`❌ Failed to connect session ${sessionInfo.sessionId}:`, error);
         // Không xóa session khi lỗi - giữ lại để resume
@@ -187,7 +186,7 @@ export function startSSEServer(server: Server) {
 
     // Check session có active không (SSE connection còn alive)
     if (!session.isActive) {
-      console.log(`💤 Session inactive: ${sessionId}, need SSE reconnection`);
+      console.log(`💤 SESSION INACTIVE: ${sessionId} - need reconnect`);
       return res.status(410).json({
         jsonrpc: '2.0',
         error: {
