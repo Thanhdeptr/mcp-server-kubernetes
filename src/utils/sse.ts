@@ -17,19 +17,7 @@ export function startSSEServer(server: Server) {
   // Simple session management - không bao giờ xóa sessions
   const sessions = new Map<string, SessionInfo>();
 
-  // Helper function để check transport có alive không
-  function isTransportAlive(transport: SSEServerTransport): boolean {
-    try {
-      // Kiểm tra transport có còn kết nối không
-      return transport &&
-        typeof transport.handlePostMessage === 'function' &&
-        // @ts-ignore - access internal property để check connection
-        transport._response &&
-        !transport._response.destroyed;
-    } catch {
-      return false;
-    }
-  }
+  // Không cần helper function phức tạp nữa
 
   app.get('/sse', async (req, res) => {
     const requestedSessionId = req.query.sessionId as string;
@@ -82,6 +70,14 @@ export function startSSEServer(server: Server) {
       if (sessionInfo) {
         sessionInfo.isActive = false;
         console.log(`⚠️ SSE connection closed for session: ${sessionInfo.sessionId} (session preserved for resume)`);
+      }
+    });
+
+    // Handle SSE connection error
+    res.on('error', (error) => {
+      if (sessionInfo) {
+        sessionInfo.isActive = false;
+        console.log(`❌ SSE connection error for session: ${sessionInfo.sessionId}:`, error.message);
       }
     });
 
@@ -175,39 +171,15 @@ export function startSSEServer(server: Server) {
     // Update last activity
     session.lastActivity = Date.now();
 
-    // Không auto-resume nữa - client phải tự reconnect SSE
-    if (!session.isActive) {
-      console.log(`💤 Session inactive: ${sessionId}, need SSE reconnection`);
-      return res.status(410).json({
+    // Đơn giản: chỉ check session có sẵn sàng không
+    if (!session.isReady) {
+      console.log(`⏳ Session not ready: ${sessionId}`);
+      return res.status(503).json({
         jsonrpc: '2.0',
         error: {
           code: -32000,
-          message: 'Session inactive. Please reconnect SSE first.',
-          data: {
-            sessionId: sessionId,
-            action: 'reconnect_sse',
-            instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
-          }
-        },
-        id: req.body?.id || null
-      });
-    }
-
-    // Kiểm tra transport có alive và valid không
-    if (!session.transport || !isTransportAlive(session.transport)) {
-      console.log(`⚠️ Transport dead for session: ${sessionId}, need SSE reconnection`);
-
-      // Trả về response yêu cầu client reconnect SSE
-      return res.status(200).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'SSE connection lost. Please reconnect SSE first.',
-          data: {
-            sessionId: sessionId,
-            action: 'reconnect_sse',
-            instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
-          }
+          message: 'Session not ready. Please wait.',
+          data: { sessionId: sessionId }
         },
         id: req.body?.id || null
       });
@@ -218,25 +190,15 @@ export function startSSEServer(server: Server) {
       console.log(`📤 RPC call processed for session: ${sessionId}`);
     } catch (error) {
       console.error(`❌ Error handling RPC for session ${sessionId}:`, error);
-
-      // Nếu lỗi là "SSE connection not established", đánh dấu disconnected
-      if (error instanceof Error && error.message.includes('SSE connection not established')) {
-        session.isActive = false;
-        return res.status(410).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message: 'SSE connection lost. Please reconnect to resume.',
-            data: {
-              sessionId: sessionId,
-              resumeUrl: `/sse?sessionId=${sessionId}`
-            }
-          },
-          id: null
-        });
-      }
-
-      res.status(500).send('Internal server error');
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Internal server error',
+          data: { sessionId: sessionId }
+        },
+        id: req.body?.id || null
+      });
     }
   });
 
