@@ -185,36 +185,22 @@ export function startSSEServer(server: Server) {
       });
     }
 
-    // Auto-resume nếu session inactive (nhanh hơn client reconnect)
+    // Check session có active không (SSE connection còn alive)
     if (!session.isActive) {
-      console.log(`🔄 Auto-resuming session: ${sessionId}`);
-
-      try {
-        // Tạo transport tạm thời để handle request này
-        const tempTransport = new SSEServerTransport('/messages', res);
-        tempTransport.sessionId = sessionId;
-
-        // Update session với transport mới
-        session.transport = tempTransport;
-        session.isActive = true;
-
-        console.log(`✅ Auto-resumed session: ${sessionId}`);
-      } catch (error) {
-        console.log(`❌ Auto-resume failed: ${sessionId}, fallback to client reconnect`);
-        return res.status(410).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message: 'Session inactive. Please reconnect SSE first.',
-            data: {
-              sessionId: sessionId,
-              action: 'reconnect_sse',
-              instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
-            }
-          },
-          id: req.body?.id || null
-        });
-      }
+      console.log(`💤 Session inactive: ${sessionId}, need SSE reconnection`);
+      return res.status(410).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Session inactive. Please reconnect SSE first.',
+          data: {
+            sessionId: sessionId,
+            action: 'reconnect_sse',
+            instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
+          }
+        },
+        id: req.body?.id || null
+      });
     }
 
     try {
