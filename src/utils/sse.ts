@@ -37,7 +37,7 @@ export function startSSEServer(server: Server) {
         sessionInfo.isActive = true;
         sessionInfo.lastActivity = Date.now();
 
-        console.log(`✅ Session resumed and ready: ${requestedSessionId}`);
+        console.log(`✅ Session resumed: ${requestedSessionId}`);
       } else {
         console.log(`⚠️ Requested session not found, creating new: ${requestedSessionId}`);
       }
@@ -163,8 +163,18 @@ export function startSSEServer(server: Server) {
 
     // Kiểm tra SSE connection còn active không
     if (!session.isActive) {
-      console.log(`💔 Session disconnected, need to resume: ${sessionId}`);
-      return res.status(410).send('SSE connection closed. Please reconnect with same sessionId to resume.');
+      return res.status(410).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Session disconnected. Please reconnect SSE to resume.',
+          data: {
+            sessionId: sessionId,
+            resumeUrl: `/sse?sessionId=${sessionId}`
+          }
+        },
+        id: null
+      });
     }
 
     try {
@@ -182,8 +192,18 @@ export function startSSEServer(server: Server) {
       // Nếu lỗi là "SSE connection not established", đánh dấu disconnected
       if (error instanceof Error && error.message.includes('SSE connection not established')) {
         session.isActive = false;
-        console.log(`💔 Session disconnected: ${sessionId} (resume with same sessionId)`);
-        return res.status(410).send('SSE connection lost. Please reconnect with same sessionId to resume.');
+        return res.status(410).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'SSE connection lost. Please reconnect to resume.',
+            data: {
+              sessionId: sessionId,
+              resumeUrl: `/sse?sessionId=${sessionId}`
+            }
+          },
+          id: null
+        });
       }
 
       res.status(500).send('Internal server error');
