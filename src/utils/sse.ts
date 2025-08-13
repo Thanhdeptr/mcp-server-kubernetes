@@ -37,6 +37,7 @@ export function startSSEServer(server: Server) {
         const newTransport = new SSEServerTransport('/messages', res);
         sessionInfo.transport = newTransport;
         sessionInfo.isActive = true;
+        sessionInfo.isReady = false; // Reset ready state để force reconnect
         sessionInfo.lastActivity = Date.now();
 
         console.log(`✅ SESSION RESUMED: ${requestedSessionId}`);
@@ -161,16 +162,10 @@ export function startSSEServer(server: Server) {
       return res.status(404).send('Session not found. Must establish SSE connection first.');
     }
 
-    // Kiểm tra session có sẵn sàng không
-    if (!session.isReady) {
-      console.log(`⏳ Session not ready yet: ${sessionId}`);
-      return res.status(503).send('Session not ready. Please wait a moment and try again.');
-    }
-
     // Update last activity
     session.lastActivity = Date.now();
 
-    // Check session state và auto-resume nếu cần
+    // Kiểm tra session có sẵn sàng không
     if (!session.isReady) {
       console.log(`⏳ Session not ready: ${sessionId}`);
       return res.status(503).json({
