@@ -17,6 +17,20 @@ export function startSSEServer(server: Server) {
   // Simple session management - không bao giờ xóa sessions
   const sessions = new Map<string, SessionInfo>();
 
+  // Helper function để check transport có alive không
+  function isTransportAlive(transport: SSEServerTransport): boolean {
+    try {
+      // Kiểm tra transport có còn kết nối không
+      return transport &&
+        typeof transport.handlePostMessage === 'function' &&
+        // @ts-ignore - access internal property để check connection
+        transport._response &&
+        !transport._response.destroyed;
+    } catch {
+      return false;
+    }
+  }
+
   app.get('/sse', async (req, res) => {
     const requestedSessionId = req.query.sessionId as string;
     let sessionInfo: SessionInfo | undefined;
@@ -169,25 +183,25 @@ export function startSSEServer(server: Server) {
       // Note: Transport sẽ được tạo mới khi cần thiết trong handlePostMessage
     }
 
-    try {
-      // Kiểm tra transport có tồn tại không - nếu không thì tạo mock response
-      if (!session.transport || typeof session.transport.handlePostMessage !== 'function') {
-        console.log(`⚠️ Transport invalid for session: ${sessionId}, returning mock response`);
-        // Trả về response yêu cầu client tạo kết nối SSE mới
-        return res.status(410).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message: 'Session exists but needs SSE connection. Please establish SSE first.',
-            data: {
-              sessionId: sessionId,
-              resumeUrl: `/sse?sessionId=${sessionId}`
-            }
-          },
-          id: null
-        });
-      }
+    // Kiểm tra transport có alive và valid không
+    if (!session.transport || !isTransportAlive(session.transport)) {
+      console.log(`⚠️ Transport dead for session: ${sessionId}, need SSE reconnection`);
+      session.isActive = false; // Mark as inactive
+      return res.status(410).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Session exists but SSE connection is dead. Please reconnect.',
+          data: {
+            sessionId: sessionId,
+            resumeUrl: `/sse?sessionId=${sessionId}`
+          }
+        },
+        id: null
+      });
+    }
 
+    try {
       session.transport.handlePostMessage(req, res);
       console.log(`📤 RPC call processed for session: ${sessionId}`);
     } catch (error) {
