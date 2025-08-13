@@ -161,27 +161,31 @@ export function startSSEServer(server: Server) {
     // Update last activity
     session.lastActivity = Date.now();
 
-    // Kiểm tra SSE connection còn active không
+    // Auto-resume session nếu inactive
     if (!session.isActive) {
-      return res.status(410).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'Session disconnected. Please reconnect SSE to resume.',
-          data: {
-            sessionId: sessionId,
-            resumeUrl: `/sse?sessionId=${sessionId}`
-          }
-        },
-        id: null
-      });
+      console.log(`🔄 Auto-resuming session on tool call: ${sessionId}`);
+      session.isActive = true;
+      session.lastActivity = Date.now();
+      // Note: Transport sẽ được tạo mới khi cần thiết trong handlePostMessage
     }
 
     try {
-      // Kiểm tra transport có tồn tại không
+      // Kiểm tra transport có tồn tại không - nếu không thì tạo mock response
       if (!session.transport || typeof session.transport.handlePostMessage !== 'function') {
-        console.error(`❌ Invalid transport for session: ${sessionId}`);
-        return res.status(500).send('Transport not properly initialized');
+        console.log(`⚠️ Transport invalid for session: ${sessionId}, returning mock response`);
+        // Trả về response yêu cầu client tạo kết nối SSE mới
+        return res.status(410).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Session exists but needs SSE connection. Please establish SSE first.',
+            data: {
+              sessionId: sessionId,
+              resumeUrl: `/sse?sessionId=${sessionId}`
+            }
+          },
+          id: null
+        });
       }
 
       session.transport.handlePostMessage(req, res);
