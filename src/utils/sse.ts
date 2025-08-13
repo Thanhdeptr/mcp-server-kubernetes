@@ -171,7 +171,7 @@ export function startSSEServer(server: Server) {
     // Update last activity
     session.lastActivity = Date.now();
 
-    // Đơn giản: chỉ check session có sẵn sàng không
+    // Check session state và auto-resume nếu cần
     if (!session.isReady) {
       console.log(`⏳ Session not ready: ${sessionId}`);
       return res.status(503).json({
@@ -183,6 +183,38 @@ export function startSSEServer(server: Server) {
         },
         id: req.body?.id || null
       });
+    }
+
+    // Auto-resume nếu session inactive (nhanh hơn client reconnect)
+    if (!session.isActive) {
+      console.log(`🔄 Auto-resuming session: ${sessionId}`);
+
+      try {
+        // Tạo transport tạm thời để handle request này
+        const tempTransport = new SSEServerTransport('/messages', res);
+        tempTransport.sessionId = sessionId;
+
+        // Update session với transport mới
+        session.transport = tempTransport;
+        session.isActive = true;
+
+        console.log(`✅ Auto-resumed session: ${sessionId}`);
+      } catch (error) {
+        console.log(`❌ Auto-resume failed: ${sessionId}, fallback to client reconnect`);
+        return res.status(410).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Session inactive. Please reconnect SSE first.',
+            data: {
+              sessionId: sessionId,
+              action: 'reconnect_sse',
+              instructions: 'Call GET /sse?sessionId=' + sessionId + ' to resume session'
+            }
+          },
+          id: req.body?.id || null
+        });
+      }
     }
 
     try {
